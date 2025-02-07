@@ -4,6 +4,7 @@ from config import *
 import h5py
 import os
 from tqdm import tqdm
+import argparse
 
 import numpy as np
 import torch
@@ -21,7 +22,7 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
     model.eval()
 
     repr_layer, batch_size, embeddings_size = model_args['repr_layer'], model_args['batch_size'], model_args['embeddings_size']
-
+    model_capacity = model_args["model_capacity"]
 
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)
 
@@ -58,17 +59,20 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
             
             all_embeddings[result_idx: result_idx + curr_batch_len] = flattened_embeddings
             result_idx+= curr_batch_len
-        
-    gathered_results = [None] * world_size
-    dist.all_gather_object(gathered_results, all_embeddings)
+    
+    gathered_results = None
+    if rank == 0:
+        gathered_results = [None] * world_size
+   
+    dist.all_gather_object(gathered_results, all_embeddings, dst=0)
 
     if rank == 0:
         print('Generation completed! Saving...')
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/train/'
         final_embeddings = np.concatenate(gathered_results, axis=0)
-        print(f'FINAL SHAPE: {final_embeddings.shape}')
-        with h5py.File(base_file+f'{dataset.dataset_name}_embeddings_{embeddings_size}.h5', 'w') as f:
-            f.create_dataset('{embeddings_size}', data=final_embeddings, compression='gzip')
+
+        with h5py.File(base_file+f'{dataset.dataset_name}_embeddings_{model_capacity}.h5', 'w') as f:
+            f.create_dataset(f'', data=final_embeddings, compression='gzip')
             
     
 
@@ -91,7 +95,7 @@ def main(model_capacity, dataset_file, batch_size):
     dataset = ESMDataset(batch_converter=batch_converter, seq_file=dataset_file)
 
     model_args = {}
-    model_args['repr_layer'], model_args['batch_size'], model_args['embeddings_size'] = repr_layer, batch_size, embeddings_size
+    model_args['model_capacity'], model_args['repr_layer'], model_args['batch_size'], model_args['embeddings_size'] = model_capacity, repr_layer, batch_size, embeddings_size
 
     run_embedding_generation(rank, model, world_size, dataset, model_args)
     dist.destroy_process_group()
@@ -99,7 +103,13 @@ def main(model_capacity, dataset_file, batch_size):
 
 if __name__ == "__main__":
 
-    ### TODO: add it from arg ###
+    
+    parser = argparse.ArgumentParser(description="Embedding generation script using PLMs.")
+    parser.add_argument("--model_capacity", type=str, default='8M', help="The model used for generating")
+    parser.add ParenthesisGroup("--dataset_file", type=str, default='toy_set_1000seqs.fasta', help="Protein file")
+    parser.add ParenthesisGroup("--batch_size", type=int, default=32, help="Batch size")
+
+    args = parser.parse_args()
     model_capacity = '8M'
     dataset_file = '/hpc/group/singhlab/rawdata/uniref50/toy_set_1000seqs.fasta'
     batch_size = 32
