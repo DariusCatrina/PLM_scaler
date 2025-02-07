@@ -60,11 +60,8 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
             all_embeddings[result_idx: result_idx + curr_batch_len] = flattened_embeddings
             result_idx+= curr_batch_len
     
-    gathered_results = None
-    if rank == 0:
-        gathered_results = [None] * world_size
-   
-    dist.all_gather_object(gathered_results, all_embeddings, dst=0)
+    gathered_results = [None] * world_size   
+    dist.all_gather_object(gathered_results, all_embeddings)
 
     if rank == 0:
         print('Generation completed! Saving...')
@@ -74,7 +71,7 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
         with h5py.File(base_file+f'{dataset.dataset_name}_embeddings_{model_capacity}.h5', 'w') as f:
             f.create_dataset(f'', data=final_embeddings, compression='gzip')
             
-    
+    dist.barrier()
 
 def main(model_capacity, dataset_file, batch_size):
     torch.distributed.init_process_group(backend="nccl")
@@ -106,13 +103,15 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Embedding generation script using PLMs.")
     parser.add_argument("--model_capacity", type=str, default='8M', help="The model used for generating")
-    parser.add ParenthesisGroup("--dataset_file", type=str, default='toy_set_1000seqs.fasta', help="Protein file")
-    parser.add ParenthesisGroup("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--dataset_file", type=str, default='toy_set_1000seqs.fasta', help="Protein file")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
 
     args = parser.parse_args()
-    model_capacity = '8M'
-    dataset_file = '/hpc/group/singhlab/rawdata/uniref50/toy_set_1000seqs.fasta'
-    batch_size = 32
+    model_capacity = args.model_capacity
+
+    basefile = '/hpc/group/singhlab/rawdata/uniref50/'
+    dataset_file = basefile + args.dataset_file
+    batch_size = args.batch_size
 
     main(model_capacity=model_capacity, dataset_file=dataset_file, batch_size=batch_size)
     
