@@ -13,6 +13,8 @@ class ESMDataset(Dataset):
         if seq_file.split('.')[-1] == 'fasta':
             self.init_data_fasta(seq_file)
 
+        self.dataset_name = seq_file.split('/')[-1].split('.')[0]
+
     def init_data_fasta(self, seq_file):
         data_dict = read_fasta_to_dict(seq_file)
         self.tokens_lens = np.zeros((len(data_dict)), dtype=np.int32)

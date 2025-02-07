@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=8           # Number of CPU cores per task
 #SBATCH --gres=gpu:2               # Request 2 GPUs
 #SBATCH --partition=scavenger-gpu,gpu-common,singhlab-gpu,cellbio-dgx
-#SBATCH --mem=10G 
+#SBATCH --mem=90G 
 #SBATCH --output=./runs/logs/run_%j.out  
 #SBATCH --error=./runs/logs/run_%j.err 
 
