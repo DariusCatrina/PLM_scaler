@@ -10,17 +10,13 @@
 #SBATCH --output=./runs/logs/run_%j.out  
 #SBATCH --error=./runs/logs/run_%j.err 
 
-
 # Set environment variables for PyTorch DDP
 export MASTER_PORT=$(expr 10000 + $(echo -n $SLURM_JOBID | tail -c 4))
 export MASTER_ADDR=$(hostname)
 export WORLD_SIZE=2
+export OMP_NUM_THREADS=8
 export NCCL_DEBUG=INFO
 
 # Run the script
-srun python3 -m torch.distributed.launch \
-    --nproc_per_node=2 \
-    --master_addr=$MASTER_ADDR \
-    --master_port=$MASTER_PORT \
-    src/embeddings/generate.py
+torchrun --nnodes=1 --nproc_per_node=2 src/embeddings/generate.py
 

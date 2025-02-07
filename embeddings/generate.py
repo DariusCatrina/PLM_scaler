@@ -34,14 +34,15 @@ def run_embedding_generation(rank, world_size, dataset):
         dataset,
         batch_size=32, 
         sampler=data_sampler,
-        num_workers=os.cpu_count(),
+        num_workers=8,
         pin_memory=True
     )
-    print('********* Sanity check *********')
-    print(f'On device {rank}')
-    print(f'Length of dataset: {len(dataset)}, batch_size: {32}')
-    print(f'Dataloader length: {len(embedding_loader)}')
-    print('*********')
+    if dist.get_rank() == 0:
+        print('********* Sanity check *********')
+        print(f'On device {rank}')
+        print(f'Length of dataset: {len(dataset)}, batch_size: {32}')
+        print(f'Dataloader length: {len(embedding_loader)}')
+        print('*********')
     dist.destroy_process_group()
 
 def main(n_gpus, model_capacity, dataset_file):
@@ -60,9 +61,7 @@ def main(n_gpus, model_capacity, dataset_file):
         run_embedding_generation,
         args=(world_size, dataset,),
         nprocs=world_size,
-        join=True,
-        start_method="fork"
-    )
+        join=True)
 
 
 if __name__ == "__main__":
@@ -72,6 +71,7 @@ if __name__ == "__main__":
     model_capacity = '8M'
     dataset_file = '/hpc/group/singhlab/rawdata/uniref50/toy_set_1000seqs.fasta'
 
+    mp.set_start_method("spawn", force=True)
     main(n_gpus=n_gpus, model_capacity=model_capacity, dataset_file=dataset_file)
     
 
