@@ -38,9 +38,7 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
     print(f'Dataloader length: {len(dataloader)}')
     print('*********')
 
-    total_len = np.sum(dataset.tokens_lens)
-    all_embeddings = np.zeros((total_len, embeddings_size))
-    result_idx = 0
+    all_embeddings = []
 
     with torch.no_grad():
         for batch in tqdm(dataloader):
@@ -56,20 +54,19 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
             selected_embeddings = [token_representations[i, 1: 1 + batch_lens[i], :] for i in range(len(batch_lens))]
             flattened_embeddings = torch.cat(selected_embeddings, dim=0).detach().to('cpu').numpy()
             
-            
-            all_embeddings[result_idx: result_idx + curr_batch_len] = flattened_embeddings
-            result_idx+= curr_batch_len
+            all_embeddings.append(flattened_embeddings)
+
     
     gathered_results = [None] * world_size   
-    dist.all_gather_object(gathered_results, all_embeddings)
+    dist.all_gather_object(gathered_results, np.concatenate(all_embeddings, axis=0))
 
     if rank == 0:
         print('Generation completed! Saving...')
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/train/'
         final_embeddings = np.concatenate(gathered_results, axis=0)
-
-        with h5py.File(base_file+f'{dataset.dataset_name}_embeddings_{model_capacity}.h5', 'w') as f:
-            f.create_dataset(f'', data=final_embeddings, compression='gzip')
+        print(final_embeddings.shape)
+        with h5py.File(base_file+f'{dataset.dataset_name}_{model_capacity}.h5', 'w') as f:
+            f.create_dataset(f'embed', data=final_embeddings, compression='gzip')
             
     dist.barrier()
 
