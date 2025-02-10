@@ -65,8 +65,8 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/train/'
         final_embeddings = np.concatenate(gathered_results, axis=0)
         print(final_embeddings.shape)
-        with h5py.File(base_file+f'{dataset.dataset_name}_{model_capacity}.h5', 'w') as f:
-            f.create_dataset(f'embed', data=final_embeddings, compression='gzip')
+        file = base_file+f'{dataset.dataset_name}_{model_capacity}.npy'
+        np.save(file, final_embeddings)
             
     dist.barrier()
 
