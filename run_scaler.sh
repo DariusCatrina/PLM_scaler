@@ -12,4 +12,4 @@
 export OMP_NUM_THREADS=20
 
 # Run the script
-python src/scaler/regressor.py
+python src/scaler/scaler.py

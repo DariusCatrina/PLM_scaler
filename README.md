@@ -10,7 +10,8 @@ PLM_Scaller
           |--> util.py (usefull auxiliary functions)
           |--> config.py (configuration file)
     > scaler 
-        | ''' directory that contains the code for Regression + PCA pipeline '''
-        |TODO
+          | ''' directory that contains the code for Regression + PCA pipeline '''
+          |--> modules.py (script with Regressor + PCA modules)
+          |--> scaler.py (wrapper class) 
     > run.sh (sh file to submit to slurm)
 ```
