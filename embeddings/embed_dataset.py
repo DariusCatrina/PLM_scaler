@@ -33,6 +33,6 @@ class ESMDataset(Dataset):
         return len(self.tokens)
 
     def __getitem__(self, idx):
-        return self.tokens_lens[idx], self.tokens_labels[idx], self.tokens[idx]
+        return idx, self.tokens_lens[idx], self.tokens_labels[idx], self.tokens[idx]
 
 

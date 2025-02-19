@@ -12,6 +12,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
+import gc
 
 
 def run_embedding_generation(rank, model, world_size, dataset, model_args):
@@ -25,24 +26,24 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
     model_capacity = model_args["model_capacity"]
 
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)
-
     dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=8, pin_memory=True)
 
     
     if rank == 0:
         print(f"Running embedding generation on {world_size} GPUs...")
 
-    print('********* Sanity check *********')
+    print('********* Sanity check *********\n')
     print(f'On device {rank}')
     print(f'Length of dataset: {len(dataset)}, batch_size: {batch_size}')
     print(f'Dataloader length: {len(dataloader)}')
     print('*********')
 
-    all_embeddings = []
+    rank_embeddings = []
+    rank_len = 0
 
     with torch.no_grad():
         for batch in tqdm(dataloader):
-            batch_lens, _, batch_tokens = batch
+            _, batch_lens, _, batch_tokens = batch
             batch_tokens = batch_tokens.to(device)
 
             results = model(batch_tokens, repr_layers=[repr_layer], return_contacts=False)
@@ -54,19 +55,40 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
             selected_embeddings = [token_representations[i, 1: 1 + batch_lens[i], :] for i in range(len(batch_lens))]
             flattened_embeddings = torch.cat(selected_embeddings, dim=0).detach().to('cpu').numpy()
             
-            all_embeddings.append(flattened_embeddings)
+            rank_embeddings.append(flattened_embeddings)
+            rank_len+=flattened_embeddings.shape[0]
+            
 
+    dist.barrier()
+
+    gathered_results = [None] * world_size 
+    dist.all_gather_object(gathered_results, rank_len)
+
+    print(f'**** Saving on {rank} ****\n')
+    base_file = '/hpc/home/dgc26/projects/esm-scaling/data/train/'
+    embed_file = f'{dataset.dataset_name}_{model_capacity}_{rank}.npy'
+
+    np.save(base_file+embed_file, np.concatenate(rank_embeddings, axis=0))
     
-    gathered_results = [None] * world_size   
-    dist.all_gather_object(gathered_results, np.concatenate(all_embeddings, axis=0))
-
+    
     if rank == 0:
-        print('Generation completed! Saving...')
-        base_file = '/hpc/home/dgc26/projects/esm-scaling/data/train/'
-        final_embeddings = np.concatenate(gathered_results, axis=0)
-        print(final_embeddings.shape)
-        file = base_file+f'{dataset.dataset_name}_{model_capacity}.npy'
-        np.save(file, final_embeddings)
+        print('******* Generation complete *****\n')
+        print('Merging....')
+        final_file =  f'{dataset.dataset_name}_{model_capacity}.npy'
+        mmap_final = np.memmap(base_file+final_file, dtype=np.float32, mode='w+', shape=(sum(gathered_results), embeddings_size))
+        offset = 0
+
+        for rank_ in range(world_size):
+            embed_file = f"{dataset.dataset_name}_{model_capacity}_{rank_}.npy"
+            local_embed = np.load(base_file+embed_file)
+            local_len = local_embed.shape[0]
+
+            mmap_final[offset:offset + local_len] = local_embed
+            mmap_final.flush()
+            del local_embed
+            os.remove(base_file+embed_file)
+            gc.collect()
+            offset+=local_len
             
     dist.barrier()
 
@@ -112,6 +134,5 @@ if __name__ == "__main__":
 
     main(model_capacity=model_capacity, dataset_file=dataset_file, batch_size=batch_size)
     
-
 
 
