@@ -1,7 +1,40 @@
-import torch
-from torch.utils.data import Dataset
-from util import read_fasta_to_dict
+import math
 import numpy as np
+
+from util import read_fasta_to_dict
+
+import torch
+from torch.utils.data import Dataset, DistributedSampler
+
+
+class ESMDistributedSampler(DistributedSampler):
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False):
+        if num_replicas is None:
+            num_replicas = torch.distributed.get_world_size()
+        if rank is None:
+            rank = torch.distributed.get_rank()
+
+        self.dataset = dataset
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.epoch = 0
+        self.shuffle=False
+
+        total_size = len(self.dataset)
+        self.split_sizes = [(total_size // num_replicas) + (1 if i < total_size % num_replicas else 0)
+                            for i in range(num_replicas)]
+
+        self.offsets = [sum(self.split_sizes[:i]) for i in range(num_replicas)]
+        self.local_size = self.split_sizes[self.rank]
+
+    def __iter__(self):
+        start = self.offsets[self.rank]
+        end = start + self.local_size
+
+        return iter(list(range(start, end)))
+
+    def __len__(self):
+        return self.local_size
 
 class ESMDataset(Dataset):
     def __init__(self, batch_converter=None, seq_file=None):
@@ -12,23 +45,48 @@ class ESMDataset(Dataset):
 
         if seq_file.split('.')[-1] == 'fasta':
             self.init_data_fasta(seq_file)
+        if seq_file.split('.')[-1] == 'csv':
+            self.init_data_mut(seq_file)
 
         self.dataset_name = seq_file.split('/')[-1].split('.')[0]
 
     def init_data_fasta(self, seq_file):
-        data_dict = read_fasta_to_dict(seq_file)
-        self.tokens_lens = np.zeros((len(data_dict)), dtype=np.int32)
+        self.data_dict = read_fasta_to_dict(seq_file)
+        self.tokens_lens = np.zeros((len(self.data_dict)), dtype=np.int16)
 
-        for i, (_, seq) in enumerate(data_dict):
+        for i, (_, seq) in enumerate(self.data_dict):
             self.tokens_lens[i] = len(seq)
-        self.tokens_labels, _, self.tokens = self.batch_converter(data_dict)
+        self.tokens_labels, _, self.tokens = self.batch_converter(self.data_dict)
 
 
     def init_data_mut(self, seq_file):
-        raise NotImplementedError()
+        data_pd = read_csv(seq_file) 
+        # reconstruct original protein
+        first_mut = data_pd['mutant'][0] 
+        X = first_mut[0]
+        i = get_mut_idx(first_mut)
+
+        original_prot = list(data_pd['mutated_sequence'][0])
+        original_prot[i] = X
+        original_prot = ''.join(original_prot)
+
+        mutated_prot_arr = data_pd['mutated_sequence']
+        mutated_idx_arr = data_pd['mutant'].apply(get_mut_idx)
+
+        data = list(zip(mutated_idx_arr, mutated_prot_arr))
+        data = [(None, original_prot)] + data
+
+        self.data_dict = data
+
+        self.tokens_lens = np.zeros((len(data)), dtype=np.int32)
+
+        for i, (_,seq) in enumerate(data):
+            self.tokens_lens[i] = len(seq)
+        
+        self.tokens_labels, _, self.tokens = self.batch_converter(data)
 
     def __len__(self):
-        assert len(self.tokens_lens) == len(self.tokens_lens) == len(self.tokens)
+        assert len(self.tokens_labels) == len(self.tokens_lens) == len(self.tokens)
 
         return len(self.tokens)
 

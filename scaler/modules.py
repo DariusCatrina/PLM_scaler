@@ -5,6 +5,8 @@ from sklearn.multioutput import MultiOutputRegressor
 from multiprocessing import Pool
 from sklearn.metrics import r2_score
 from dataclasses import dataclass
+from sklearn.preprocessing import MinMaxScaler
+from concurrent.futures import ProcessPoolExecutor
 
 import os
 import numpy as np
@@ -26,17 +28,47 @@ class Regressor(object):
         self.xin_size = xin_size
         self.xout_size = xout_size
         self.datafile = datafile
-        self.train_args =train_args
+        self.train_args = train_args
 
         self.model = None
+        self.dtype=np.float32
+        self.scaler = MinMaxScaler()
+        self.scale = False
+
+        self.embeddings_in = models[self.xin_size]['embed_dim']
+        self.embeddings_out = models[self.xout_size]['embed_dim']
+
 
     def _load_data(self):
-        base_file = '/hpc/home/dgc26/projects/esm-scaling/data/train/' + self.datafile + '_'
-        self.xin = np.load(base_file+self.xin_size+".npy", mmap_mode="r")
-        self.xout = np.load(base_file+self.xout_size+".npy", mmap_mode="r")
+        base_file = f'/hpc/home/dgc26/projects/esm-scaling/data/train/{self.datafile}/'
+        data_file_in = base_file +self.xin_size+".npy"
+        data_file_out = base_file +self.xout_size+".npy"
 
-        print(self.xin.shape)
-        print(self.xout.shape)
+        file_size_in = os.path.getsize(data_file_in)
+        file_size_out = os.path.getsize(data_file_out)
+        num_elements_in = file_size_in // np.dtype(self.dtype).itemsize
+        num_elements_out = file_size_out // np.dtype(self.dtype).itemsize
+        
+        self.xin = np.memmap(data_file_in, dtype=np.float32, mode='c', shape=(num_elements_in // self.embeddings_in, self.embeddings_in))
+        self.xout = np.memmap(data_file_out, dtype=np.float32, mode='c', shape=(num_elements_out // self.embeddings_out, self.embeddings_out))
+
+        if self.scale:
+            n_batches = len(self.xin) // self.train_args.batch_size + 1
+            print('Training scaler...')
+            print(self.xin)
+            for i in range(n_batches):
+                start_idx = i*self.train_args.batch_size
+                end_idx = start_idx + self.train_args.batch_size
+                batch_X = self.xin[start_idx:end_idx]
+                self.scaler.partial_fit(batch_X)
+
+            print('Scaling seq in...')
+            for i in range(n_batches):
+                start_idx = i*self.train_args.batch_size
+                end_idx = start_idx + self.train_args.batch_size
+                self.xin[start_idx:end_idx] = self.scaler.transform(self.xin[start_idx:end_idx])
+            # print(self.xin)
+        print(self.xin.shape, self.xout.shape)
 
     def _from_pretrained(self, file):
         self.state_dict = np.load(file, allow_pickle=True)
@@ -57,36 +89,25 @@ class Regressor(object):
             self.model.estimators_.append(reg)
 
 
+
     def predict(self, xin, batch_size):
         n_batches = len(xin) // batch_size + 1
         y_pred = []
         for i in range(n_batches):
-            start_idx = i* batch_size
+            start_idx = i * batch_size
             end_idx = start_idx + batch_size
-
             batch_X = xin[start_idx:end_idx]
+
             y_pred.append(self.model.predict(batch_X))
 
         return np.concatenate(y_pred, axis=0)
 
 
-    def _predict_intern(self):
-        y_pred = np.zeros_like(self.xout)
-        for i in range(self.n_batches):
-            start_idx = i*self.train_args.batch_size
-            end_idx = start_idx + self.train_args.batch_size
-
-            batch_X = self.xin[start_idx:end_idx]
-            y_pred[start_idx:end_idx, :] = self.model.predict(batch_X)
-
-    
-        return y_pred
-
     def fit(self):
         base = SGDRegressor(max_iter=1, eta0=self.train_args.lr,warm_start=True)
         self.model = MultiOutputRegressor(base, n_jobs=self.train_args.num_workers)
-
         self._load_data()
+
         self.n_batches = len(self.xin) // self.train_args.batch_size + 1
 
         for epoch in range(self.train_args.epochs):
@@ -96,9 +117,9 @@ class Regressor(object):
 
                 batch_X, batch_y = self.xin[start_idx:end_idx], self.xout[start_idx:end_idx]
                 self.model.partial_fit(batch_X, batch_y)
-                
-            r_2 = r2_score(self.xout[:], self._predict_intern())
-            print(f"At epoch {epoch}, r^2 score:{r_2}")
+  
+        r_2 = r2_score(self.xout, self.predict(self.xin, self.train_args.batch_size))
+        print(f"r^2 score:{r_2}")
 
 
 
@@ -161,84 +182,5 @@ class PCAWrapper:
         self.explained_variance_ratio_ = self.state_dict["explained_variance_ratio_"]
         self.n_components = int(self.state_dict["n_components"])
 
-
-
-
-    
-class Scaler(object):
-    def __init__(self, xin, xout):
-        self.xin = xin
-        self.xout = xout
-        self.regressor = Regressor(xin, xout, None, None)
-        self.pca = PCAWrapper(n_components=models['150M']['embed_dim'] - models['8M']['embed_dim'])
-
-        self.state_dict = {}
-
-    def fit_regressor(self, datafile, train_args):
-        print('Fitting regresor..')
-        self.regressor.datafile = datafile
-        self.regressor.train_args = train_args
-
-        regressor_state_dict = self.regressor.fit()
-        self.state_dict.update(regressor_state_dict)
-
-    def fit_pca(self, residuals):
-        print('Fitting pca..')
-        self.pca.fit(residuals)
-        pca_state_dict = self.pca.state_dict
-        self.state_dict.update(pca_state_dict)
-
-    def transform_pca(self, residuals):
-        return self.pca.transform(residuals)
-    
-    def from_pretrained(self):
-        base_file = '/hpc/home/dgc26/projects/esm-scaling/data/'
-        file = base_file+f"scaler_"+self.xin+'_'+self.xout+".npz"
-        self.regressor._from_pretrained(file)
-        self.pca._from_pretrained(file)
-
-    def predict_regressor(self, xin, batch_size):
-        return self.regressor.predict(xin, batch_size)
-    
-    def transform_pca(self, residuals):
-        return self.pca.transform(residuals)
-
-    def fit(self, datafile, train_args):
-        self.fit_regressor(datafile, train_args)
-
-        xin_transformed = self.predict_regressor(self.regressor.xin, train_args.batch_size)
-        res = self.regressor.xout - xin_transformed
-        self.fit_pca(res)
-
-        self.save_state_dict()
-
-    def step(self, xin, xout, batch_size):
-        xin_transformed = self.predict_regressor(xin, batch_size)
-        res = xout - xin
-
-        reduced_xin = self.transform_pca(res)
-        xout_prime = np.concatenate((xin, reduced_xin), axis=-1)
-
-        return xout_prime
-    
-
-    def save_state_dict(self):
-        print(f'Saving Scaler model: {self.xin}->{self.xout}')
-        base_file = '/hpc/home/dgc26/projects/esm-scaling/data/'
-        np.savez_compressed(base_file+ f"scaler_{self.xin}_{self.xout}.npz", **self.state_dict)
-
-
-if __name__ == '__main__':
-        
-    scaler = Scaler(xin='8M', xout='150M')
-    scaler.fit(datafile='toy_set_1000seqs', train_args= RegressorTrainArgs(epochs=13))
-
-    scaler = Scaler(xin='150M', xout='650M')
-    scaler.fit(datafile='toy_set_1000seqs', train_args=RegressorTrainArgs(epochs=7))
-
-    scaler = Scaler(xin='650M', xout='3B')
-    scaler.fit(datafile='toy_set_1000seqs', train_args=RegressorTrainArgs(epochs=2))
-    
-    
 
     

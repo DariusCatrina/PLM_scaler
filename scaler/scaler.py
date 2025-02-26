@@ -15,12 +15,20 @@ import fbpca
 from config import *
 from modules import *
 
+@dataclass
+class RegressorTrainArgs:
+    lr : int = 0.001
+    num_workers :int = int(os.environ.get('OMP_NUM_THREADS'))
+    epochs:int = 5
+    batch_size:int = 4096
+
+
 class Scaler(object):
     def __init__(self, xin, xout):
         self.xin = xin
         self.xout = xout
         self.regressor = Regressor(xin, xout, None, None)
-        self.pca = PCAWrapper(n_components=models['150M']['embed_dim'] - models['8M']['embed_dim'])
+        self.pca = PCAWrapper(n_components=models[self.xout]['embed_dim'] - models[self.xin]['embed_dim'])
 
         self.state_dict = {}
 
@@ -41,25 +49,24 @@ class Scaler(object):
     def transform_pca(self, residuals):
         return self.pca.transform(residuals)
     
-    def from_pretrained(self):
+    def from_pretrained(self, datafile):
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/'
-        file = base_file+f"scaler_"+self.xin+'_'+self.xout+".npz"
+        file = base_file+f"scaler_{self.xin}_{self.xout}_{datafile}.npz"
         self.regressor._from_pretrained(file)
         self.pca._from_pretrained(file)
 
     def predict_regressor(self, xin, batch_size):
         return self.regressor.predict(xin, batch_size)
-    
-    def transform_pca(self, residuals):
-        return self.pca.transform(residuals)
 
-    def fit(self, datafile, train_args):
+    def fit(self, datafile, train_args, verbose=True):
         self.fit_regressor(datafile, train_args)
 
         xin_transformed = self.predict_regressor(self.regressor.xin, train_args.batch_size)
         res = self.regressor.xout - xin_transformed
         self.fit_pca(res)
-
+        
+        if verbose:
+            print(f'fitted pca:{self.transform_pca(res)}')
         self.save_state_dict()
 
     def step(self, xin, xout, batch_size):
@@ -75,16 +82,20 @@ class Scaler(object):
     def save_state_dict(self):
         print(f'Saving Scaler model: {self.xin}->{self.xout}')
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/'
-        np.savez_compressed(base_file+ f"scaler_{self.xin}_{self.xout}.npz", **self.state_dict)
+        np.savez_compressed(base_file+ f"scaler_{self.xin}_{self.xout}_{self.regressor.datafile}.npz", **self.state_dict)
+
 
 
 if __name__ == '__main__':
-        
-    scaler = Scaler(xin='8M', xout='150M')
-    scaler.fit(datafile='toy_set_1000seqs', train_args= RegressorTrainArgs(epochs=13))
+    datafile = 'toy_set_1000seqs'
+    print('8M -> 150M')
+    scaler_1 = Scaler(xin='8M', xout='150M')
+    scaler_1.fit(datafile=datafile, train_args=RegressorTrainArgs(epochs=7))
 
-    scaler = Scaler(xin='150M', xout='650M')
-    scaler.fit(datafile='toy_set_1000seqs', train_args=RegressorTrainArgs(epochs=7))
+    print('150M -> 650M')
+    scaler_2 = Scaler(xin='150M', xout='650M')
+    scaler_2.fit(datafile=datafile, train_args=RegressorTrainArgs(epochs=7))
 
-    scaler = Scaler(xin='650M', xout='3B')
-    scaler.fit(datafile='toy_set_1000seqs', train_args=RegressorTrainArgs(epochs=2))
+    print('650M -> 3B')
+    scaler_3 = Scaler(xin='150M', xout='650M')
+    scaler_3.fit(datafile=datafile, train_args=RegressorTrainArgs(epochs=7))
