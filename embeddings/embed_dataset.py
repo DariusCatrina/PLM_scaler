@@ -1,5 +1,6 @@
 import math
 import numpy as np
+from pandas import read_csv
 
 from util import read_fasta_to_dict
 
@@ -35,6 +36,12 @@ class ESMDistributedSampler(DistributedSampler):
 
     def __len__(self):
         return self.local_size
+
+def get_mut_idx(mutation_str):
+     # XiY (Y is in the ith position, X originally in ith position)
+    i = int(mutation_str[1:-1]) - 1
+
+    return i
 
 class ESMDataset(Dataset):
     def __init__(self, batch_converter=None, seq_file=None):

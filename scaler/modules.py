@@ -7,6 +7,7 @@ from sklearn.metrics import r2_score
 from dataclasses import dataclass
 from sklearn.preprocessing import MinMaxScaler
 from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 
 import os
 import numpy as np
@@ -14,7 +15,7 @@ import joblib
 import pickle
 import fbpca
 
-from config import *
+from ..utils.config import *
 
 @dataclass
 class RegressorTrainArgs:
@@ -80,7 +81,7 @@ class Regressor(object):
             k.replace("estimator__", ""): v for k, v in regressor_hyperparams.items() if k.replace("estimator__", "") in valid_sgd_keys
         }
 
-        self.model = MultiOutputRegressor(SGDRegressor(**base_estimator_params))
+        self.model = MultiOutputRegressor(SGDRegressor(**base_estimator_params), n_jobs= int(os.environ.get('OMP_NUM_THREADS')))
         self.model.estimators_ = []
         for coef, intercept in zip(self.state_dict["regressor_estimators"], self.state_dict["regressor_intercepts"]):
             reg = SGDRegressor(**base_estimator_params)
@@ -89,7 +90,7 @@ class Regressor(object):
             self.model.estimators_.append(reg)
 
 
-
+            
     def predict(self, xin, batch_size):
         n_batches = len(xin) // batch_size + 1
         y_pred = []

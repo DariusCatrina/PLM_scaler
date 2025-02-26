@@ -1,6 +1,7 @@
-from embed_dataset import ESMDataset, ESMDistributedSampler
-from util import *
-from config import *
+from ..embeddings.embed_dataset import ESMDataset, ESMDistributedSampler
+from ..embeddings.generate import main as gen_main
+from ..utils.util import *
+from ..utils.config import *
 import h5py
 import os
 from tqdm import tqdm
@@ -39,11 +40,13 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
     print('*********')
 
     rank_embeddings = []
+    rank_idx = []
+    wilde_type = None
     rank_len = 0
 
     with torch.no_grad():
         for batch in tqdm(dataloader):
-            _, batch_lens, _, batch_tokens = batch
+            idx, batch_lens, batch_labels, batch_tokens = batch
             batch_tokens = batch_tokens.to(device)
 
             results = model(batch_tokens, repr_layers=[repr_layer], return_contacts=False)
@@ -51,25 +54,40 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
 
             selected_embeddings = []
             for i in range(len(batch_tokens)):
-                selected_embeddings.append(token_representations[i, 1: 1 + batch_lens[i], :])
-                assert selected_embeddings[-1].size() == torch.Size([batch_lens[i], embeddings_size])
+                mut_idx = batch_labels[i]
 
-            flattened_embeddings = torch.cat(selected_embeddings, dim=0).detach().to('cpu').numpy()
-            
-            rank_embeddings.append(flattened_embeddings)
-            rank_len+=flattened_embeddings.shape[0]
-            assert flattened_embeddings.shape[0] == sum(batch_lens)
+                if mut_idx == None:
+                    wilde_type = token_representations[i, 1: 1 + batch_lens[i], :].detach().to('cpu').numpy()
+                    assert wilde_type.size() == torch.Size([batch_lens[i], embeddings_size])
+                else:
+                    selected_embeddings.append(token_representations[i, 1 + mut_idx, :])
+                    rank_idx.extend(idx)
+                    assert selected_embeddings[-1].size() == torch.Size([1, embeddings_size])
+
+            selected_embeddings = selected_embeddings.detach().to('cpu').numpy()
+            if wilde_type == None:
+                assert selected_embeddings.shape == (len(idx), embeddings_size)
+            else:
+                assert selected_embeddings.shape == (len(idx) - 1, embeddings_size)
+            rank_embeddings.extend(selected_embeddings)
+            rank_len+= selected_embeddings.shape[0]
 
 
     dist.barrier()
+
     gathered_results = [None] * world_size 
     dist.all_gather_object(gathered_results, rank_len)
-
     print(f'**** Saving on {rank} ****\n')
-    base_file = f'/hpc/home/dgc26/projects/esm-scaling/data/train/{dataset.dataset_name}/'
+    base_file = f'/hpc/home/dgc26/projects/esm-scaling/data/eval/{dataset.dataset_name}/'
     embed_file = f'{model_capacity}_{rank}.npy'
+    idx_file = f'{model_capacity}_{rank}_idx.npy'
 
+    if wilde_type != None:
+        wild_type_file = f'{model_capacity}_wilde_type.npy'
+         np.save(base_file+wild_type_file, wilde_type)
+    
     np.save(base_file+embed_file, np.concatenate(rank_embeddings, axis=0))
+    np.save(base_file+idx_file, np.array(rank_idx))
     
     if rank == 0:
         print('******* Generation complete *****\n')
@@ -82,10 +100,15 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
 
         for rank_ in range(world_size):
             embed_file = f"{model_capacity}_{rank_}.npy"
+            idx_file = f'{model_capacity}_{rank_}_idx.npy'
             local_embed = np.load(base_file+embed_file)
-            local_len = local_embed.shape[0]
-
-            mmap_final[offset:offset + local_len] = local_embed
+            local_idx = np.load(base_file+idx_file)
+            
+            assert local_idx.shape[0] == local_embed.shape[0]
+            
+            for i,idx in enumerate(local_idx):
+                mmap_final[idx, :] = local_embed[i]
+                
             mmap_final.flush()
             del local_embed
             os.remove(base_file+embed_file)
@@ -129,7 +152,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     model_capacity = args.model_capacity
 
-    basefile = '/hpc/group/singhlab/rawdata/uniref50/'
+    basefile = '/hpc/home/dgc26/projects/esm-scaling/data/DMS_ProteinGym_substitutions/'
     dataset_file = basefile + args.dataset_file
     batch_size = args.batch_size
 

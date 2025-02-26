@@ -5,6 +5,7 @@ from sklearn.multioutput import MultiOutputRegressor
 from multiprocessing import Pool
 from sklearn.metrics import r2_score
 from dataclasses import dataclass
+import argparse
 
 import os
 import numpy as np
@@ -12,8 +13,8 @@ import joblib
 import pickle
 import fbpca
 
-from config import *
-from modules import *
+from ..utils.config import *
+from .modules import *
 
 @dataclass
 class RegressorTrainArgs:
@@ -87,15 +88,21 @@ class Scaler(object):
 
 
 if __name__ == '__main__':
-    datafile = 'toy_set_1000seqs'
-    print('8M -> 150M')
-    scaler_1 = Scaler(xin='8M', xout='150M')
-    scaler_1.fit(datafile=datafile, train_args=RegressorTrainArgs(epochs=7))
+    parser = argparse.ArgumentParser(description="Scaler training script")
+    parser.add_argument("--model_capacity_in", type=str, default='8M')
+    parser.add_argument("--model_capacity_out", type=str, default='150M')
+    parser.add_argument("--dataset_file", type=str, default='None', help="Protein file")
+    parser.add_argument("--batch_size", type=int, default=None, help="Batch size")
+    parser.add_argument("--epochs", type=int, default=None)
 
-    print('150M -> 650M')
-    scaler_2 = Scaler(xin='150M', xout='650M')
-    scaler_2.fit(datafile=datafile, train_args=RegressorTrainArgs(epochs=7))
 
-    print('650M -> 3B')
-    scaler_3 = Scaler(xin='150M', xout='650M')
-    scaler_3.fit(datafile=datafile, train_args=RegressorTrainArgs(epochs=7))
+    args = parser.parse_args()
+
+    xin = args.model_capacity_in
+    xout = args.model_capacity_out
+    training_args = RegressorTrainArgs(epochs=args.epochs, batch_size=args.batch_size)
+    
+    datafile = args.dataset_file
+    print(f'{xin} -> {xout}')
+    scaler = Scaler(xin=xin, xout=xout)
+    scaler.fit(datafile=datafile, train_args=training_args)
