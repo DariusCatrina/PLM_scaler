@@ -16,6 +16,7 @@ import pickle
 import fbpca
 
 from ..utils.config import *
+from sklearn.linear_model import LinearRegression
 
 @dataclass
 class RegressorTrainArgs:
@@ -23,7 +24,9 @@ class RegressorTrainArgs:
     num_workers :int = int(os.environ.get('OMP_NUM_THREADS'))
     epochs:int = 5
     batch_size:int = 4096
+    eval_batch_size:int = 4096
 
+    
 class Regressor(object):
     def __init__(self, xin_size, xout_size, datafile, train_args):
         self.xin_size = xin_size
@@ -89,7 +92,6 @@ class Regressor(object):
             reg.intercept_ = np.array(intercept)
             self.model.estimators_.append(reg)
 
-
             
     def predict(self, xin, batch_size):
         n_batches = len(xin) // batch_size + 1
@@ -119,7 +121,7 @@ class Regressor(object):
                 batch_X, batch_y = self.xin[start_idx:end_idx], self.xout[start_idx:end_idx]
                 self.model.partial_fit(batch_X, batch_y)
   
-        r_2 = r2_score(self.xout, self.predict(self.xin, self.train_args.batch_size))
+        r_2 = r2_score(self.xout, self.predict(self.xin, self.train_args.eval_batch_size))
         print(f"r^2 score:{r_2}")
 
 
@@ -132,7 +134,32 @@ class Regressor(object):
 
         return self.state_dict
 
-    
+class skRegressor(Regressor):
+    def __init__(self, xin_size, xout_size, datafile, train_args=None):
+        super().__init__(xin_size, xout_size, datafile, train_args)
+        if train_args:
+            self.n_jobs = train_args.num_workers
+        else:
+            self.n_jobs = int(os.environ.get('OMP_NUM_THREADS'))
+        self.model = None
+
+    def predict(self, xin, batch_size=None):
+        return self.model.predict(X=xin)
+
+    def fit(self):
+        self.model = LinearRegression(n_jobs=self.n_jobs)
+        self._load_data()
+        self.model.fit(X=self.xin, y=self.xout)
+
+        print(f'r2 score: {r2_score(self.xout, self.predict(self.xin))}')
+
+        return {"regressor":pickle.dumps(self.model)}
+
+    def _from_pretrained(self, file):
+        state_dict = np.load(file, allow_pickle=True)
+        self.model = pickle.loads(state_dict['regressor'])
+
+   
 
 class PCAWrapper:
     def __init__(self, n_components):

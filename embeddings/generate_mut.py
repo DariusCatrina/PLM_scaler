@@ -1,7 +1,6 @@
-from ..embeddings.embed_dataset import ESMDataset, ESMDistributedSampler
-from ..embeddings.generate import main as gen_main
-from ..utils.util import *
-from ..utils.config import *
+from embed_dataset import ESMDataset, ESMDistributedSampler
+from util import *
+from config import *
 import h5py
 import os
 from tqdm import tqdm
@@ -29,7 +28,8 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
     sampler = ESMDistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)
     dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, num_workers=int(os.getenv('OMP_NUM_THREADS')), pin_memory=True)
 
-    
+    base_file = f'/hpc/home/dgc26/projects/esm-scaling/data/eval/{dataset.dataset_name}/'
+
     if rank == 0:
         print(f"Running embedding generation on {world_size} GPUs...")
 
@@ -55,65 +55,61 @@ def run_embedding_generation(rank, model, world_size, dataset, model_args):
             selected_embeddings = []
             for i in range(len(batch_tokens)):
                 mut_idx = batch_labels[i]
-
-                if mut_idx == None:
-                    wilde_type = token_representations[i, 1: 1 + batch_lens[i], :].detach().to('cpu').numpy()
+                if mut_idx == -1:
+                    wilde_type = token_representations[i, 1: 1 + batch_lens[i], :]
                     assert wilde_type.size() == torch.Size([batch_lens[i], embeddings_size])
+                    wilde_type = wilde_type.detach().to('cpu').numpy()
+
+                    wild_type_file = f'{model_capacity}_wilde_type.npy'
+                    print(wilde_type)
+                    np.save(base_file+wild_type_file, wilde_type)
                 else:
-                    selected_embeddings.append(token_representations[i, 1 + mut_idx, :])
-                    rank_idx.extend(idx)
+                    selected_embeddings.append(token_representations[i, 1 + mut_idx, :].unsqueeze(0))
+                    rank_idx.append(idx[i])
                     assert selected_embeddings[-1].size() == torch.Size([1, embeddings_size])
 
-            selected_embeddings = selected_embeddings.detach().to('cpu').numpy()
-            if wilde_type == None:
-                assert selected_embeddings.shape == (len(idx), embeddings_size)
-            else:
-                assert selected_embeddings.shape == (len(idx) - 1, embeddings_size)
-            rank_embeddings.extend(selected_embeddings)
-            rank_len+= selected_embeddings.shape[0]
+            if len(selected_embeddings) > 0:
+                selected_embeddings = torch.cat(selected_embeddings, dim=0).detach().to('cpu').numpy()
+                
+                rank_embeddings.append(selected_embeddings)
+                rank_len+= selected_embeddings.shape[0]
 
 
     dist.barrier()
 
     gathered_results = [None] * world_size 
     dist.all_gather_object(gathered_results, rank_len)
-    print(f'**** Saving on {rank} ****\n')
-    base_file = f'/hpc/home/dgc26/projects/esm-scaling/data/eval/{dataset.dataset_name}/'
+    
     embed_file = f'{model_capacity}_{rank}.npy'
     idx_file = f'{model_capacity}_{rank}_idx.npy'
-
-    if wilde_type != None:
-        wild_type_file = f'{model_capacity}_wilde_type.npy'
-         np.save(base_file+wild_type_file, wilde_type)
     
     np.save(base_file+embed_file, np.concatenate(rank_embeddings, axis=0))
     np.save(base_file+idx_file, np.array(rank_idx))
     
     if rank == 0:
-        print('******* Generation complete *****\n')
+        print('******* Generation complete *******\n')
         print('Merging....')
         final_file =  f'{model_capacity}.npy'
 
         print(f'FINAL SHAPE: {sum(gathered_results), embeddings_size}')
         mmap_final = np.memmap(base_file+final_file, dtype=np.float32, mode='w+', shape=(sum(gathered_results), embeddings_size))
-        offset = 0
 
         for rank_ in range(world_size):
             embed_file = f"{model_capacity}_{rank_}.npy"
             idx_file = f'{model_capacity}_{rank_}_idx.npy'
             local_embed = np.load(base_file+embed_file)
             local_idx = np.load(base_file+idx_file)
-            
+
             assert local_idx.shape[0] == local_embed.shape[0]
             
             for i,idx in enumerate(local_idx):
-                mmap_final[idx, :] = local_embed[i]
+                mmap_final[idx-1, :] = local_embed[i]
                 
             mmap_final.flush()
             del local_embed
             os.remove(base_file+embed_file)
+            os.remove(base_file+idx_file)
             gc.collect()
-            offset+=local_len
             
     dist.barrier()
 
@@ -147,7 +143,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Embedding generation script using PLMs.")
     parser.add_argument("--model_capacity", type=str, default='8M', help="The model used for generating")
     parser.add_argument("--dataset_file", type=str, default='None', help="Protein file")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=None, help="Batch size")
 
     args = parser.parse_args()
     model_capacity = args.model_capacity

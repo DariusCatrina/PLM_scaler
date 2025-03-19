@@ -28,7 +28,7 @@ class Scaler(object):
     def __init__(self, xin, xout):
         self.xin = xin
         self.xout = xout
-        self.regressor = Regressor(xin, xout, None, None)
+        self.regressor = skRegressor(xin, xout, None, None)
         self.pca = PCAWrapper(n_components=models[self.xout]['embed_dim'] - models[self.xin]['embed_dim'])
 
         self.state_dict = {}
@@ -52,11 +52,11 @@ class Scaler(object):
     
     def from_pretrained(self, datafile):
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/'
-        file = base_file+f"scaler_{self.xin}_{self.xout}_{datafile}.npz"
+        file = base_file+f"models/sk_scaler_{self.xin}_{self.xout}_{datafile}.npz"
         self.regressor._from_pretrained(file)
         self.pca._from_pretrained(file)
 
-    def predict_regressor(self, xin, batch_size):
+    def predict_regressor(self, xin, batch_size=None):
         return self.regressor.predict(xin, batch_size)
 
     def fit(self, datafile, train_args, verbose=True):
@@ -70,20 +70,20 @@ class Scaler(object):
             print(f'fitted pca:{self.transform_pca(res)}')
         self.save_state_dict()
 
-    def step(self, xin, xout, batch_size):
-        xin_transformed = self.predict_regressor(xin, batch_size)
-        res = xout - xin
+    def step(self, xin, xout, batch_size=None):
+        xin_transformed = self.predict_regressor(xin)
+        res = xout - xin_transformed
 
         reduced_xin = self.transform_pca(res)
         xout_prime = np.concatenate((xin, reduced_xin), axis=-1)
-
+        assert xout_prime.shape == xout.shape
         return xout_prime
     
 
     def save_state_dict(self):
         print(f'Saving Scaler model: {self.xin}->{self.xout}')
         base_file = '/hpc/home/dgc26/projects/esm-scaling/data/'
-        np.savez_compressed(base_file+ f"scaler_{self.xin}_{self.xout}_{self.regressor.datafile}.npz", **self.state_dict)
+        np.savez_compressed(base_file+ f"models/sk_scaler_{self.xin}_{self.xout}_{self.regressor.datafile}.npz", **self.state_dict)
 
 
 

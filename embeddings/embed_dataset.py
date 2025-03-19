@@ -2,7 +2,7 @@ import math
 import numpy as np
 from pandas import read_csv
 
-from util import read_fasta_to_dict
+from util import *
 
 import torch
 from torch.utils.data import Dataset, DistributedSampler
@@ -44,26 +44,34 @@ def get_mut_idx(mutation_str):
     return i
 
 class ESMDataset(Dataset):
-    def __init__(self, batch_converter=None, seq_file=None):
+    def __init__(self, batch_converter=None, seq_file=None, tokenize=True):
         self.batch_converter = batch_converter
         self.tokens_lens = None
         self.tokens_labels = None
         self.tokens = None
+        self.scores = None
 
         if seq_file.split('.')[-1] == 'fasta':
             self.init_data_fasta(seq_file)
         if seq_file.split('.')[-1] == 'csv':
             self.init_data_mut(seq_file)
 
+        if tokenize:
+            self.tokenize()
+
+
         self.dataset_name = seq_file.split('/')[-1].split('.')[0]
 
-    def init_data_fasta(self, seq_file):
-        self.data_dict = read_fasta_to_dict(seq_file)
+    def tokenize(self):
         self.tokens_lens = np.zeros((len(self.data_dict)), dtype=np.int16)
-
         for i, (_, seq) in enumerate(self.data_dict):
             self.tokens_lens[i] = len(seq)
+        
         self.tokens_labels, _, self.tokens = self.batch_converter(self.data_dict)
+
+    def init_data_fasta(self, seq_file):
+
+        self.data_dict = read_fasta_to_dict(seq_file)
 
 
     def init_data_mut(self, seq_file):
@@ -81,20 +89,12 @@ class ESMDataset(Dataset):
         mutated_idx_arr = data_pd['mutant'].apply(get_mut_idx)
 
         data = list(zip(mutated_idx_arr, mutated_prot_arr))
-        data = [(None, original_prot)] + data
+        data = [(-1, original_prot)] + data
 
         self.data_dict = data
-
-        self.tokens_lens = np.zeros((len(data)), dtype=np.int32)
-
-        for i, (_,seq) in enumerate(data):
-            self.tokens_lens[i] = len(seq)
+        self.scores = data_pd['DMS_score'].to_numpy()
         
-        self.tokens_labels, _, self.tokens = self.batch_converter(data)
-
     def __len__(self):
-        assert len(self.tokens_labels) == len(self.tokens_lens) == len(self.tokens)
-
         return len(self.tokens)
 
     def __getitem__(self, idx):
